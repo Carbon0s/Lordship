@@ -7,8 +7,30 @@ from werkzeug.security import generate_password_hash, check_password_hash
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'lordship_super_secret_key_2026')
-app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', 'sqlite:///lordship.db')
+
+# =======================
+# ПОДКЛЮЧЕНИЕ К POSTGRESQL (AIVEN)
+# =======================
+RAW_DB_URL = os.environ.get(
+    'DATABASE_URL', 
+    'postgres://avnadmin:AVNS_ui8VBMYvcbFDjIrZ8ja@lmbank-carbon0sik.g.aivencloud.com:11779/defaultdb?sslmode=require'
+)
+
+# SQLAlchemy требует префикс postgresql:// вместо postgres://
+if RAW_DB_URL.startswith("postgres://"):
+    RAW_DB_URL = RAW_DB_URL.replace("postgres://", "postgresql://", 1)
+
+app.config['SQLALCHEMY_DATABASE_URI'] = RAW_DB_URL
+
+# Оптимизация подключений для предотвращения превышения лимитов и фризов
+app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
+    "pool_size": 3,
+    "max_overflow": 2,
+    "pool_recycle": 300,
+    "pool_pre_ping": True,
+}
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+
 db = SQLAlchemy(app)
 
 # =======================
@@ -338,7 +360,7 @@ BASE_HTML = """
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Lordship Command Center</title>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
     <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;500;600;700;800&display=swap" rel="stylesheet">
@@ -347,7 +369,7 @@ BASE_HTML = """
             --primary: #00f0ff;
             --primary-glow: rgba(0, 240, 255, 0.4);
             --secondary: #7000ff;
-            --bg-glass: rgba(13, 17, 28, 0.85);
+            --bg-glass: rgba(13, 17, 28, 0.92);
             --border-glass: rgba(255, 255, 255, 0.1);
             --text-main: #e2e8f0;
             --danger: #ff0055;
@@ -382,7 +404,56 @@ BASE_HTML = """
             display: flex; 
             flex-direction: column; 
             box-shadow: 5px 0 30px rgba(0,0,0,0.5);
-            z-index: 10;
+            z-index: 1000;
+            transition: left 0.3s ease;
+            position: relative;
+        }
+
+        .sidebar-close-btn {
+            display: none;
+            position: absolute;
+            top: 15px;
+            right: 15px;
+            background: rgba(255, 0, 85, 0.15);
+            border: 1px solid var(--danger);
+            color: var(--danger);
+            width: 32px;
+            height: 32px;
+            border-radius: 8px;
+            cursor: pointer;
+            align-items: center;
+            justify-content: center;
+            font-size: 16px;
+            transition: all 0.2s;
+        }
+        .sidebar-close-btn:hover { background: var(--danger); color: #fff; }
+
+        .sidebar-open-btn {
+            display: none;
+            position: fixed;
+            top: 15px;
+            left: 15px;
+            z-index: 999;
+            background: rgba(13, 17, 28, 0.9);
+            border: 1px solid var(--primary);
+            color: var(--primary);
+            width: 42px;
+            height: 42px;
+            border-radius: 12px;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            box-shadow: 0 0 15px var(--primary-glow);
+            font-size: 18px;
+        }
+
+        .sidebar-overlay {
+            display: none;
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.7);
+            backdrop-filter: blur(5px);
+            z-index: 999;
         }
         
         .logo-container {
@@ -458,6 +529,8 @@ BASE_HTML = """
             margin-bottom: 30px; 
             padding-bottom: 15px; 
             border-bottom: 1px solid var(--border-glass); 
+            gap: 15px;
+            flex-wrap: wrap;
         }
         
         .header h2 { font-size: 30px; font-weight: 700; letter-spacing: 1px; }
@@ -479,7 +552,7 @@ BASE_HTML = """
             border-color: rgba(0, 240, 255, 0.3);
         }
         
-        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 20px; }
+        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 20px; }
         
         input, select, textarea { 
             width: 100%; 
@@ -534,7 +607,8 @@ BASE_HTML = """
         .bg-admin { background: rgba(112, 0, 255, 0.2); color: #b785ff; border: 1px solid #7000ff; box-shadow: 0 0 10px rgba(112,0,255,0.4); }
         .bg-rank { background: rgba(0, 240, 255, 0.2); color: var(--primary); border: 1px solid var(--primary); box-shadow: 0 0 10px var(--primary-glow); }
         
-        table { width: 100%; border-collapse: collapse; margin-top: 15px; font-size: 16px; }
+        .table-responsive { width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+        table { width: 100%; border-collapse: collapse; margin-top: 15px; font-size: 16px; white-space: nowrap; }
         th, td { padding: 14px; text-align: left; border-bottom: 1px solid var(--border-glass); }
         th { color: var(--primary); text-transform: uppercase; font-size: 14px; letter-spacing: 1px; font-weight: 700; }
         tr:hover td { background: rgba(255,255,255,0.05); }
@@ -542,25 +616,67 @@ BASE_HTML = """
         optgroup { background: #0a1128; color: var(--primary); }
         option { background: #0a1128; color: #fff; }
 
-        ::-webkit-scrollbar { width: 8px; }
+        ::-webkit-scrollbar { width: 8px; height: 8px; }
         ::-webkit-scrollbar-track { background: #050b14; }
         ::-webkit-scrollbar-thumb { background: var(--primary); border-radius: 4px; }
+
+        /* АДАПТИВНОСТЬ ДЛЯ ТЕЛЕФОНОВ И ПЛАНШЕТОВ */
+        @media (max-width: 992px) {
+            .grid { grid-template-columns: 1fr !important; }
+            .card[style*="grid-column: span 2"] { grid-column: auto !important; }
+        }
+
+        @media (max-width: 768px) {
+            .sidebar {
+                position: fixed;
+                top: 0;
+                left: -310px;
+                height: 100vh;
+                width: 280px;
+            }
+            .sidebar.active { left: 0; }
+            .sidebar-close-btn { display: flex; }
+            .sidebar-open-btn { display: flex; }
+            .sidebar-overlay.active { display: block; }
+
+            .main-content {
+                padding: 70px 15px 25px 15px;
+                height: auto;
+                min-height: 100vh;
+            }
+            .header {
+                flex-direction: column;
+                align-items: flex-start;
+                gap: 12px;
+            }
+            .header h2 { font-size: 24px; }
+            .card { padding: 18px; }
+        }
     </style>
 </head>
 <body>
+    <button class="sidebar-open-btn" onclick="toggleSidebar(true)" title="Открыть меню">
+        <i class="fa-solid fa-chevron-right"></i>
+    </button>
+    <div class="sidebar-overlay" id="sidebarOverlay" onclick="toggleSidebar(false)"></div>
+
     {% if user and user.warn_reset_time %}
         {% set elapsed = (now - user.warn_reset_time).total_seconds() %}
         {% if elapsed < 600 %}
             {% set rem_min = ((600 - elapsed) // 60) | int + 1 %}
             <div style="position: fixed; top: 15px; right: 20px; z-index: 9999; background: rgba(255, 0, 85, 0.35); backdrop-filter: blur(10px); border: 1px solid var(--danger); padding: 10px 18px; border-radius: 10px; color: #fff; font-size: 14px; font-weight: bold; box-shadow: 0 0 15px rgba(255, 0, 85, 0.5);">
                 <i class="fa-solid fa-triangle-exclamation" style="margin-right: 8px; color: var(--danger);"></i>
-                АККАУНТ СБРОШЕН ЗА 3 ВАРНА (Оповещение скроется через {{ rem_min }} мин)
+                АККАУНТ СБРОШЕН (Скроется через {{ rem_min }} мин)
             </div>
         {% endif %}
     {% endif %}
 
     {% if user %}
-    <div class="sidebar">
+    <div class="sidebar" id="sidebar">
+        <button class="sidebar-close-btn" onclick="toggleSidebar(false)">
+            <i class="fa-solid fa-xmark"></i>
+        </button>
+
         <div class="logo-container">
             <div class="logo-title">
                 <i class="fa-solid fa-star" style="font-size: 14px; color: var(--primary);"></i>
@@ -641,6 +757,21 @@ BASE_HTML = """
         
         {% block content %}{% endblock %}
     </div>
+
+    <script>
+    function toggleSidebar(open) {
+        const sidebar = document.getElementById('sidebar');
+        const overlay = document.getElementById('sidebarOverlay');
+        if (!sidebar) return;
+        if (open) {
+            sidebar.classList.add('active');
+            if (overlay) overlay.classList.add('active');
+        } else {
+            sidebar.classList.remove('active');
+            if (overlay) overlay.classList.remove('active');
+        }
+    }
+    </script>
 </body>
 </html>
 """
@@ -656,7 +787,7 @@ def index():
     content = """
     <div class="header">
         <h2>ЛИЧНЫЙ ТЕРМИНАЛ</h2>
-        <div style="display: flex; gap: 15px; align-items: center;">
+        <div style="display: flex; gap: 15px; align-items: center; flex-wrap: wrap;">
             <span class="badge bg-admin">{{ user.admin_level }}</span>
             <span class="badge bg-rank">{{ user.rank }}</span>
             {{ get_epaulette_svg(user.rank) | safe }}
@@ -674,7 +805,7 @@ def index():
         </div>
         
         <div class="card" style="border-top: 3px solid var(--secondary); grid-column: span 2;">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; flex-wrap: wrap; gap: 10px;">
                 <h3 style="color: #b785ff; font-size: 22px;"><i class="fa-solid fa-newspaper"></i> ОФИЦИАЛЬНАЯ ЛЕНТА НОВОСТЕЙ</h3>
                 {% if check_perm(user, 'can_post_news') %}
                 <a href="/admin" class="btn" style="font-size: 13px; padding: 6px 14px;"><i class="fa-solid fa-plus"></i> Опубликовать новость</a>
@@ -684,7 +815,7 @@ def index():
             <div>
                 {% for item in news %}
                     <div style="background: rgba(0,0,0,0.4); border: 1px solid var(--border-glass); border-left: 4px solid var(--primary); border-radius: 8px; padding: 20px; margin-bottom: 20px;">
-                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; flex-wrap: wrap; gap: 10px;">
                             <h4 style="color: var(--primary); font-size: 20px;">{{ item.title }}</h4>
                             <div style="display: flex; align-items: center; gap: 15px;">
                                 <small style="color: #a0aec0;">[{{ item.timestamp.strftime('%d.%m.%Y %H:%M') }}] // <a href="/profile/{{ item.author_id }}" style="color: var(--primary); text-decoration: none;">{{ item.author.username }}</a></small>
@@ -707,15 +838,17 @@ def index():
 
     <div class="card">
         <h3 style="font-size: 22px; margin-bottom: 20px;"><i class="fa-solid fa-clock-rotate-left" style="color: var(--primary);"></i> ИСТОРИЯ СЛУЖБЫ</h3>
-        <table>
-            <tr><th>Временная метка</th><th>Событие</th></tr>
-            {% for log in history %}
-            <tr>
-                <td style="width: 180px; color: #a0aec0;">{{ log.date.strftime('%Y-%m-%d %H:%M') }}</td>
-                <td style="font-weight: 500;">{{ log.action }}</td>
-            </tr>
-            {% endfor %}
-        </table>
+        <div class="table-responsive">
+            <table>
+                <tr><th>Временная метка</th><th>Событие</th></tr>
+                {% for log in history %}
+                <tr>
+                    <td style="width: 180px; color: #a0aec0;">{{ log.date.strftime('%Y-%m-%d %H:%M') }}</td>
+                    <td style="font-weight: 500;">{{ log.action }}</td>
+                </tr>
+                {% endfor %}
+            </table>
+        </div>
     </div>
     """
     return render_template_string(
@@ -736,7 +869,7 @@ def search_players():
     content = """
     <div class="header"><h2>ПОИСК БОЙЦОВ ПО БАЗЕ ДАННЫХ</h2></div>
     <div class="card">
-        <form method="GET" action="/search_players" style="display: flex; gap: 15px;">
+        <form method="GET" action="/search_players" style="display: flex; gap: 15px; flex-wrap: wrap;">
             <input type="text" name="q" value="{{ query }}" placeholder="Введите никнейм бойца..." required style="margin:0; flex:1;">
             <button type="submit" class="btn"><i class="fa-solid fa-magnifying-glass"></i> ИСКАТЬ</button>
         </form>
@@ -834,7 +967,7 @@ def view_profile(user_id):
     {% if check_perm(current_u, 'can_view_history') %}
     <div class="card">
         <h3 style="margin-bottom: 20px;"><i class="fa-solid fa-history" style="color: var(--primary);"></i> ПОЛНЫЙ ЛОГ СОБЫТИЙ БОЙЦА</h3>
-        <div style="max-height: 400px; overflow-y: auto;">
+        <div class="table-responsive" style="max-height: 400px; overflow-y: auto;">
             <table>
                 {% for log in history %}
                 <tr>
@@ -927,20 +1060,22 @@ def applications():
         
         <div class="card">
             <h3 style="margin-bottom: 20px; font-size: 22px;"><i class="fa-solid fa-folder-open" style="color: var(--primary);"></i> АРХИВ МОИХ РАПОРТОВ</h3>
-            <table>
-                <tr><th>Тип</th><th>Цель</th><th>Статус</th></tr>
-                {% for app in apps %}
-                <tr>
-                    <td>{{ app.app_type }}</td>
-                    <td><strong style="color: #fff;">{{ app.target }}</strong></td>
-                    <td>
-                        {% if app.status == 'Ожидает' %}<span style="color: #ffd700; font-weight: bold;">{{ app.status }}</span>
-                        {% elif app.status == 'Одобрено' %}<span style="color: var(--success); font-weight: bold;">{{ app.status }}</span>
-                        {% else %}<span style="color: var(--danger); font-weight: bold;">{{ app.status }}</span>{% endif %}
-                    </td>
-                </tr>
-                {% endfor %}
-            </table>
+            <div class="table-responsive">
+                <table>
+                    <tr><th>Тип</th><th>Цель</th><th>Статус</th></tr>
+                    {% for app in apps %}
+                    <tr>
+                        <td>{{ app.app_type }}</td>
+                        <td><strong style="color: #fff;">{{ app.target }}</strong></td>
+                        <td>
+                            {% if app.status == 'Ожидает' %}<span style="color: #ffd700; font-weight: bold;">{{ app.status }}</span>
+                            {% elif app.status == 'Одобрено' %}<span style="color: var(--success); font-weight: bold;">{{ app.status }}</span>
+                            {% else %}<span style="color: var(--danger); font-weight: bold;">{{ app.status }}</span>{% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </table>
+            </div>
         </div>
     </div>
     <script>
@@ -978,29 +1113,31 @@ def admin_panel():
     <div class="grid">
         <div class="card" style="grid-column: 1 / -1; border-top: 3px solid #b785ff;">
             <h3 style="margin-bottom: 20px; font-size: 22px;"><i class="fa-solid fa-inbox" style="color: #b785ff;"></i> РАПОРТЫ НА РАССМОТРЕНИИ</h3>
-            <table>
-                <tr><th>Боец</th><th>Категория</th><th>Запрос</th><th>Материалы</th><th>Резолюция</th></tr>
-                {% for app in pending_apps %}
-                <tr>
-                    <td><a href="/profile/{{ app.user.id }}" style="color: var(--primary); text-decoration: none; font-weight: bold; font-size: 18px;"><i class="fa-solid fa-user-magnifying-glass"></i> {{ app.user.username }}</a></td>
-                    <td>{{ app.app_type }}</td>
-                    <td><strong style="color: #fff;">{{ app.target }}</strong></td>
-                    <td>
-                        <a href="/admin/application/{{ app.id }}" class="btn" style="padding: 6px 14px; font-size: 13px; background: rgba(0,240,255,0.2); border: 1px solid var(--primary);">
-                            <i class="fa-solid fa-eye"></i> Изучить рапорт
-                        </a>
-                    </td>
-                    <td>
-                        {% if check_perm(user, 'can_approve_apps') %}
-                            {% if app.user_id != user.id or user.admin_level == "Специальный Администратор" %}
-                            <a href="/admin/resolve/{{ app.id }}/approve" class="btn btn-success" style="padding: 8px 12px; font-size: 14px;"><i class="fa-solid fa-check"></i> Принять</a>
-                            <a href="/admin/resolve/{{ app.id }}/reject" class="btn btn-danger" style="padding: 8px 12px; font-size: 14px;"><i class="fa-solid fa-xmark"></i> Отклонить</a>
-                            {% else %}<small style="color: var(--danger); font-weight: bold;"><i class="fa-solid fa-lock"></i> Свой рапорт</small>{% endif %}
-                        {% else %}<small style="color: #a0aec0;">[Только просмотр]</small>{% endif %}
-                    </td>
-                </tr>
-                {% endfor %}
-            </table>
+            <div class="table-responsive">
+                <table>
+                    <tr><th>Боец</th><th>Категория</th><th>Запрос</th><th>Материалы</th><th>Резолюция</th></tr>
+                    {% for app in pending_apps %}
+                    <tr>
+                        <td><a href="/profile/{{ app.user.id }}" style="color: var(--primary); text-decoration: none; font-weight: bold; font-size: 18px;"><i class="fa-solid fa-user-magnifying-glass"></i> {{ app.user.username }}</a></td>
+                        <td>{{ app.app_type }}</td>
+                        <td><strong style="color: #fff;">{{ app.target }}</strong></td>
+                        <td>
+                            <a href="/admin/application/{{ app.id }}" class="btn" style="padding: 6px 14px; font-size: 13px; background: rgba(0,240,255,0.2); border: 1px solid var(--primary);">
+                                <i class="fa-solid fa-eye"></i> Изучить рапорт
+                            </a>
+                        </td>
+                        <td>
+                            {% if check_perm(user, 'can_approve_apps') %}
+                                {% if app.user_id != user.id or user.admin_level == "Специальный Администратор" %}
+                                <a href="/admin/resolve/{{ app.id }}/approve" class="btn btn-success" style="padding: 8px 12px; font-size: 14px;"><i class="fa-solid fa-check"></i> Принять</a>
+                                <a href="/admin/resolve/{{ app.id }}/reject" class="btn btn-danger" style="padding: 8px 12px; font-size: 14px;"><i class="fa-solid fa-xmark"></i> Отклонить</a>
+                                {% else %}<small style="color: var(--danger); font-weight: bold;"><i class="fa-solid fa-lock"></i> Свой рапорт</small>{% endif %}
+                            {% else %}<small style="color: #a0aec0;">[Только просмотр]</small>{% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </table>
+            </div>
         </div>
 
         {% if check_perm(user, 'can_post_news') %}
@@ -1179,7 +1316,7 @@ def admin_permissions():
     <div class="header"><h2 style="color: var(--primary);"><i class="fa-solid fa-sliders"></i> НАСТРОЙКА ПОЛНОМОЧИЙ ПО РОЛЯМ</h2></div>
     <div class="card" style="border-top: 3px solid var(--primary);">
         <form method="POST">
-            <div style="overflow-x: auto;">
+            <div class="table-responsive">
                 <table>
                     <thead>
                         <tr>
@@ -1256,7 +1393,7 @@ def admin_user_permissions():
     content = """
     <div class="header"><h2 style="color: var(--primary);"><i class="fa-solid fa-user-gear"></i> ИНДИВИДУАЛЬНЫЕ ПРАВА БОЙЦОВ</h2></div>
     <div class="card" style="border-top: 3px solid var(--primary);">
-        <form method="GET" action="/admin/user_permissions" style="display: flex; gap: 15px;">
+        <form method="GET" action="/admin/user_permissions" style="display: flex; gap: 15px; flex-wrap: wrap;">
             <input type="text" name="username" list="user_search_list" value="{{ selected_username }}" placeholder="Введите никнейм..." required style="margin:0; flex:1;">
             <datalist id="user_search_list">
                 {% for u in all_users %}<option value="{{ u.username }}">{{ u.username }} [Ранг: {{ u.rank }}]</option>{% endfor %}
@@ -1270,7 +1407,7 @@ def admin_user_permissions():
         <h3 style="color: #b785ff; margin-bottom: 20px;">НАСТРОЙКА ПРАВ ДЛЯ: <span style="color:#fff;">{{ selected_user.username }}</span> [{{ selected_user.rank }}]</h3>
         <form method="POST">
             <input type="hidden" name="target_user_id" value="{{ selected_user.id }}">
-            <div class="grid" style="grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));">
+            <div class="grid" style="grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));">
                 <div><label style="display: flex; align-items: center; gap: 10px; cursor: pointer; font-size: 18px;"><input type="checkbox" name="can_view_apps" {% if override and override.can_view_apps %}checked{% endif %} style="width:20px; height:20px; margin:0;"> Просмотр рапортов</label></div>
                 <div><label style="display: flex; align-items: center; gap: 10px; cursor: pointer; font-size: 18px;"><input type="checkbox" name="can_approve_apps" {% if override and override.can_approve_apps %}checked{% endif %} style="width:20px; height:20px; margin:0;"> Одобрение рапортов</label></div>
                 <div><label style="display: flex; align-items: center; gap: 10px; cursor: pointer; font-size: 18px;"><input type="checkbox" name="can_mute" {% if override and override.can_mute %}checked{% endif %} style="width:20px; height:20px; margin:0;"> Выдача Мута</label></div>
@@ -1316,7 +1453,7 @@ def view_application(app_id):
         <div style="background: rgba(0,0,0,0.5); padding: 20px; border-radius: 8px; font-size: 18px; white-space: pre-wrap; margin-top: 15px;">{{ application.proof_url }}</div>
 
         {% if application.status == 'Ожидает' %}
-        <div style="margin-top: 30px; display: flex; gap: 15px;">
+        <div style="margin-top: 30px; display: flex; gap: 15px; flex-wrap: wrap;">
             {% if check_perm(user, 'can_approve_apps') %}
                 {% if application.user_id != user.id or user.admin_level == "Специальный Администратор" %}
                 <a href="/admin/resolve/{{ application.id }}/approve" class="btn btn-success"><i class="fa-solid fa-check"></i> Одобрить</a>
@@ -1483,11 +1620,11 @@ def chat_view(channel):
     content = """
     <div class="header"><h2>ЧАТ KAНАЛА: <span style="color: var(--primary);">{{ channel }}</span></h2></div>
     <div class="card" style="height: 65vh; display: flex; flex-direction: column; padding: 0; overflow: hidden; border-top: 3px solid var(--primary);">
-        <div id="chatMessages" style="flex: 1; overflow-y: auto; padding: 25px;"></div>
+        <div id="chatMessages" style="flex: 1; overflow-y: auto; padding: 20px;"></div>
         {% if not user.is_banned and not user.is_muted %}
-        <form id="chatForm" style="padding: 20px; background: rgba(13, 17, 28, 0.9); border-top: 1px solid var(--border-glass); display: flex; gap: 15px;">
-            <input type="text" id="chatInput" placeholder="Введите сообщение..." required style="margin: 0; flex: 1; font-size: 18px;">
-            <button type="submit" class="btn"><i class="fa-solid fa-paper-plane"></i> ОТПРАВИТЬ</button>
+        <form id="chatForm" style="padding: 15px; background: rgba(13, 17, 28, 0.9); border-top: 1px solid var(--border-glass); display: flex; gap: 10px;">
+            <input type="text" id="chatInput" placeholder="Введите сообщение..." required style="margin: 0; flex: 1; font-size: 16px;">
+            <button type="submit" class="btn"><i class="fa-solid fa-paper-plane"></i></button>
         </form>
         {% else %}
         <div style="padding: 15px; color: var(--danger); text-align: center; font-weight: bold;">ДОСТУП К ЧАТУ ОГРАНИЧЕН (БАН ИЛИ МУТ)</div>
@@ -1506,10 +1643,10 @@ def chat_view(channel):
             const isAtBottom = container.scrollHeight - container.clientHeight <= container.scrollTop + 80;
             
             container.innerHTML = messages.map(msg => `
-                <div style="margin-bottom: 15px; padding: 15px 20px; background: rgba(0,0,0,0.4); border-left: 3px solid var(--primary); border-radius: 0 12px 12px 0;">
+                <div style="margin-bottom: 12px; padding: 12px 15px; background: rgba(0,0,0,0.4); border-left: 3px solid var(--primary); border-radius: 0 12px 12px 0;">
                     <a href="/profile/${msg.author_id}" style="color: var(--primary); font-weight: 700; text-decoration: none;">${msg.username}</a>
-                    <span style="color: #a0aec0; font-size: 12px; margin-left: 15px;">${msg.timestamp}</span>
-                    <div style="margin-top: 8px; font-size: 18px; color: #fff;">${msg.content}</div>
+                    <span style="color: #a0aec0; font-size: 12px; margin-left: 10px;">${msg.timestamp}</span>
+                    <div style="margin-top: 6px; font-size: 16px; color: #fff;">${msg.content}</div>
                 </div>
             `).join('');
             
@@ -1589,31 +1726,32 @@ AUTH_HTML = """
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Lordship Access</title>
     <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;700&display=swap" rel="stylesheet">
     <style>
         body {
-            margin: 0; padding: 0; font-family: 'Rajdhani', sans-serif;
+            margin: 0; padding: 15px; font-family: 'Rajdhani', sans-serif;
             background: linear-gradient(-45deg, #050b14, #0a1128, #000000, #0c0822);
             background-size: 400% 400%; animation: gradientBG 15s ease infinite;
-            display: flex; justify-content: center; align-items: center; height: 100vh; color: #fff;
+            display: flex; justify-content: center; align-items: center; min-height: 100vh; color: #fff; box-sizing: border-box;
         }
         @keyframes gradientBG { 0% { background-position: 0% 50%; } 50% { background-position: 100% 50%; } 100% { background-position: 0% 50%; } }
         .box {
-            background: rgba(13, 17, 28, 0.75); backdrop-filter: blur(20px);
-            padding: 50px 40px; border-radius: 16px; border: 1px solid rgba(255,255,255,0.1);
-            text-align: center; width: 400px; box-shadow: 0 15px 35px rgba(0,0,0,0.5);
+            background: rgba(13, 17, 28, 0.85); backdrop-filter: blur(20px);
+            padding: 40px 30px; border-radius: 16px; border: 1px solid rgba(255,255,255,0.1);
+            text-align: center; width: 100%; max-width: 400px; box-shadow: 0 15px 35px rgba(0,0,0,0.5);
         }
-        h2 { color: #00f0ff; margin-bottom: 30px; font-size: 32px; letter-spacing: 3px; text-transform: uppercase; }
+        h2 { color: #00f0ff; margin-bottom: 25px; font-size: 28px; letter-spacing: 3px; text-transform: uppercase; }
         input {
-            width: 100%; padding: 15px; margin: 12px 0; background: rgba(0,0,0,0.5);
-            border: 1px solid rgba(255,255,255,0.2); color: #fff; border-radius: 8px; font-size: 18px; box-sizing: border-box;
+            width: 100%; padding: 14px; margin: 10px 0; background: rgba(0,0,0,0.5);
+            border: 1px solid rgba(255,255,255,0.2); color: #fff; border-radius: 8px; font-size: 16px; box-sizing: border-box;
         }
         button {
-            width: 100%; padding: 15px; background: linear-gradient(45deg, #0055ff, #00f0ff);
-            border: none; color: #fff; cursor: pointer; border-radius: 8px; font-size: 18px; font-weight: bold; margin-top: 20px;
+            width: 100%; padding: 14px; background: linear-gradient(45deg, #0055ff, #00f0ff);
+            border: none; color: #fff; cursor: pointer; border-radius: 8px; font-size: 17px; font-weight: bold; margin-top: 15px;
         }
-        a { color: #a0aec0; text-decoration: none; display: block; margin-top: 25px; }
+        a { color: #a0aec0; text-decoration: none; display: block; margin-top: 20px; font-size: 15px; }
         .error { color: #ff0055; margin-bottom: 15px; font-weight: bold; }
     </style>
 </head>
@@ -1689,19 +1827,19 @@ def logout():
     return redirect(url_for('login'))
 
 # =======================
-# ИНИЦИАЛИЗАЦИЯ ПРИ СТАРТЕ WSGI (РЕШЕНИЕ ДЛЯ RENDER)
+# ИНИЦИАЛИЗАЦИЯ ПРИ СТАРТЕ WSGI (СОВМЕСТИМО С POSTGRESQL)
 # =======================
 with app.app_context():
     db.create_all()
     with db.engine.connect() as conn:
         for tbl, col in [
-            ('user', 'warn_reset_flag BOOLEAN DEFAULT 0'),
-            ('user', 'warn_reset_time DATETIME'),
-            ('role_permission', 'can_delete_all_news BOOLEAN DEFAULT 0'),
-            ('user_permission_override', 'can_delete_all_news BOOLEAN DEFAULT 0')
+            ('user', 'warn_reset_flag BOOLEAN DEFAULT FALSE'),
+            ('user', 'warn_reset_time TIMESTAMP'),
+            ('role_permission', 'can_delete_all_news BOOLEAN DEFAULT FALSE'),
+            ('user_permission_override', 'can_delete_all_news BOOLEAN DEFAULT FALSE')
         ]:
             try:
-                conn.execute(db.text(f"ALTER TABLE {tbl} ADD COLUMN {col}"))
+                conn.execute(db.text(f'ALTER TABLE "{tbl}" ADD COLUMN IF NOT EXISTS {col}'))
             except Exception:
                 pass
         conn.commit()
